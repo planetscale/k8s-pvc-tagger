@@ -1,0 +1,89 @@
+name: ci
+
+on:
+  push:
+    branches:
+      - main
+  pull_request:
+    types:
+      - opened
+      - reopened
+      - synchronize
+
+permissions:
+  contents: read
+  packages: write
+  id-token: write
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - name: checkout
+        uses: actions/checkout@b4ffde65f46336ab88eb53be808477a3936bae11 # v4
+
+      - uses: actions/setup-go@0c52d547c9bc32b1aa3301fd7a9cb496313a4491 # v5
+        with:
+          go-version-file: go.mod
+
+      - uses: golangci/golangci-lint-action@3cfe3a4abbb849e10058ce4af15d205b6da42804 # v4
+        with:
+          args: --timeout=180m
+
+      - name: Build
+        run: go build -v -trimpath .
+
+      - name: test
+        run: go test -v -cover .
+
+  # release will build docker images on all runs but will only push when running from main branch
+  release:
+    needs: [test]
+    runs-on: ubuntu-latest
+    steps:
+      - name: checkout
+        uses: actions/checkout@b4ffde65f46336ab88eb53be808477a3936bae11 # v4
+
+      - name: set up QEMU
+        uses: docker/setup-qemu-action@v3
+      -
+        name: set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Docker meta
+        id: docker_meta
+        uses: docker/metadata-action@v5
+        with:
+          images: ghcr.io/${{ github.repository_owner }}/k8s-pvc-tagger
+          tags: |
+            # minimal (short sha). Generates an image tag like `sha-<short-ref>`
+            type=sha
+
+      - name: login to ghcr.io
+        uses: docker/login-action@343f7c4344506bcbf9b4de18042ae17996df046d # v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: build and push
+        id: docker_build
+        uses: docker/build-push-action@v5
+        with:
+          # only publish from main branch:
+          push: ${{ github.ref == 'refs/heads/main' }}
+          context: .
+          file: ./Dockerfile
+          build-args: VERSION=${{ steps.docker_meta.outputs.version }}
+          # platforms: linux/amd64
+          platforms: linux/amd64,linux/arm64
+          tags: ${{ steps.docker_meta.outputs.tags }}
+          labels: ${{ steps.docker_meta.outputs.labels }}
+
+      - name: install cosign
+        if: ${{ github.ref == 'refs/heads/main' }}
+        uses: sigstore/cosign-installer@main
+
+      - name: cosign the docker images
+        if: ${{ github.ref == 'refs/heads/main' }}
+        run: cosign sign --yes -a "repo=${{ github.repository }}" -r ghcr.io/${{ github.repository_owner }}/k8s-pvc-tagger@${{ steps.docker_build.outputs.digest }}

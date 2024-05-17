@@ -1,4 +1,4 @@
-FROM golang:1.21-alpine AS builder
+FROM golang:1.22-alpine AS builder
 
 ARG VERSION=0.0.1
 ARG TARGETARCH
@@ -27,7 +27,7 @@ RUN APP_BUILD_TIME=$(cat buildtime); \
     go build -ldflags="-X 'main.buildTime=${APP_BUILD_TIME}' -X 'main.buildVersion=${APP_VERSION}'" -o ${APP_NAME} .
 
 # Move to /dist directory as the place for resulting binary folder
-WORKDIR /app 
+WORKDIR /app
 
 # Copy binary from build to main folder
 RUN cp /build/${APP_NAME} .

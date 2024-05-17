@@ -1,6 +1,6 @@
 module github.com/mtougeron/k8s-pvc-tagger
 
-go 1.21
+go 1.22.3
 
 require (
 	github.com/aws/aws-sdk-go v1.49.9
