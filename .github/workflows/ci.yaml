@@ -56,8 +56,9 @@ jobs:
         with:
           images: ghcr.io/${{ github.repository_owner }}/k8s-pvc-tagger
           tags: |
-            # minimal (short sha). Generates an image tag like `sha-<short-ref>`
-            type=sha
+            # generates tags like:
+            #   ghcr.io/planetscale/k8s-pvc-tagger:2024-05-18-e5296f2
+            type=raw,value={{date 'YYYY-MM-DD'}}-{{sha}}
 
       - name: login to ghcr.io
         uses: docker/login-action@343f7c4344506bcbf9b4de18042ae17996df046d # v3
