@@ -2,10 +2,10 @@ package main
 
 import (
 	"maps"
-	"reflect"
 	"strings"
 	"testing"
 
+	"github.com/google/go-cmp/cmp"
 	"google.golang.org/api/compute/v1"
 )
 
@@ -155,54 +155,6 @@ func TestDeletePDVolumeLabels(t *testing.T) {
 	}
 }
 
-func TestSanitizeLabelsForGCP(t *testing.T) {
-	tests := []struct {
-		name   string
-		labels map[string]string
-		want   map[string]string
-	}{
-		{
-			name: "simple labels",
-			labels: map[string]string{
-				"Example/Key": "Example Value",
-				"Another.Key": "Another Value",
-			},
-			want: map[string]string{
-				"example_key": "Example Value",
-				"another-key": "Another Value",
-			},
-		},
-		{
-			name: "labels with special characters",
-			labels: map[string]string{
-				"Domain.com/Key":  "Value_1",
-				"Project.Version": "Version-1.2.3",
-			},
-			want: map[string]string{
-				"domain-com_key":  "Value_1",
-				"project-version": "Version-1.2.3",
-			},
-		},
-		{
-			name: "labels exceeding maximum length",
-			labels: map[string]string{
-				strings.Repeat("a", 70): strings.Repeat("b", 70),
-			},
-			want: map[string]string{
-				strings.Repeat("a", 63): strings.Repeat("b", 63),
-			},
-		},
-	}
-
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			if got := sanitizeLabelsForGCP(tt.labels); !reflect.DeepEqual(got, tt.want) {
-				t.Errorf("sanitizeLabelsForGCP(), got = %v, want = %v", got, tt.want)
-			}
-		})
-	}
-}
-
 func TestParseVolumeID(t *testing.T) {
 	tests := []struct {
 		name         string
@@ -252,6 +204,242 @@ func TestParseVolumeID(t *testing.T) {
 			}
 			if name != tt.wantName {
 				t.Errorf("Expected name %q, got %q", tt.wantName, name)
+			}
+		})
+	}
+}
+
+func TestSanitizeKeyForGCP(t *testing.T) {
+	tests := []struct {
+		name string
+		key  string
+		want string
+	}{
+		{
+			name: "standard valid key",
+			key:  "app",
+			want: "app",
+		},
+		{
+			name: "uppercase converted to lowercase",
+			key:  "APP",
+			want: "app",
+		},
+		{
+			name: "must start with letter",
+			key:  "123-app",
+			want: "k123-app",
+		},
+		{
+			name: "replace invalid characters",
+			key:  "kubernetes.io/app=name:v1",
+			want: "kubernetes-io_app-name-v1",
+		},
+		{
+			name: "international characters preserved",
+			key:  "café-app",
+			want: "café-app",
+		},
+		{
+			name: "truncate long key",
+			key:  strings.Repeat("a", 70),
+			want: strings.Repeat("a", 63),
+		},
+		{
+			name: "collapse multiple separators",
+			key:  "app--name___test",
+			want: "app-name_test",
+		},
+		{
+			name: "trim trailing separators",
+			key:  "app-name---_",
+			want: "app-name",
+		},
+		{
+			name: "empty string",
+			key:  "",
+			want: "",
+		},
+		{
+			name: "only special characters",
+			key:  "!@#$%^&*()",
+			want: "",
+		},
+		{
+			name: "preserve underscores",
+			key:  "app_name_test",
+			want: "app_name_test",
+		},
+		{
+			name: "complex domain-style key",
+			key:  "k8s.io/persistent-volume/mount-path",
+			want: "k8s-io_persistent-volume_mount-path",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got := sanitizeKeyForGCP(tt.key)
+			if got != tt.want {
+				t.Errorf("sanitizeKeyForGCP(%q) = %q, want %q", tt.key, got, tt.want)
+			}
+		})
+	}
+}
+
+func TestSanitizeValueForGCP(t *testing.T) {
+	tests := []struct {
+		name  string
+		value string
+		want  string
+	}{
+		{
+			name:  "standard valid value",
+			value: "value-123",
+			want:  "value-123",
+		},
+		{
+			name:  "uppercase converted to lowercase",
+			value: "VALUE_123",
+			want:  "value_123",
+		},
+		{
+			name:  "special characters replaced",
+			value: "value.with:special/chars",
+			want:  "value-with-special_chars",
+		},
+		{
+			name:  "empty value allowed",
+			value: "",
+			want:  "",
+		},
+		{
+			name:  "truncate long value",
+			value: strings.Repeat("v", 70),
+			want:  strings.Repeat("v", 63),
+		},
+		{
+			name:  "collapse multiple separators",
+			value: "value--with___separators",
+			want:  "value-with_separators",
+		},
+		{
+			name:  "trim trailing separators",
+			value: "value-123---_",
+			want:  "value-123",
+		},
+		{
+			name:  "international characters preserved",
+			value: "café-123",
+			want:  "café-123",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got := sanitizeValueForGCP(tt.value)
+			if got != tt.want {
+				t.Errorf("sanitizeValueForGCP(%q) = %q, want %q", tt.value, got, tt.want)
+			}
+		})
+	}
+}
+
+func TestSanitizeLabelsForGCP(t *testing.T) {
+	tests := []struct {
+		name   string
+		labels map[string]string
+		want   map[string]string
+	}{
+		{
+			name: "standard valid labels",
+			labels: map[string]string{
+				"app":    "nginx",
+				"env":    "prod",
+				"region": "us-east1",
+			},
+			want: map[string]string{
+				"app":    "nginx",
+				"env":    "prod",
+				"region": "us-east1",
+			},
+		},
+		{
+			name: "sanitize keys and values",
+			labels: map[string]string{
+				"Kubernetes.io/app": "NGINX-1.0",
+				"123-region":        "US-EAST1",
+			},
+			want: map[string]string{
+				"kubernetes-io_app": "nginx-1-0",
+				"k123-region":       "us-east1",
+			},
+		},
+		{
+			name: "handle empty values",
+			labels: map[string]string{
+				"app": "",
+				"env": "prod",
+				"":    "invalid",
+			},
+			want: map[string]string{
+				"app": "",
+				"env": "prod",
+			},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got := sanitizeLabelsForGCP(tt.labels)
+			if diff := cmp.Diff(tt.want, got); diff != "" {
+				t.Errorf("sanitizeLabelsForGCP() mismatch (-want +got):\n%s", diff)
+			}
+		})
+	}
+}
+
+func TestSanitizeKeysForGCP(t *testing.T) {
+	tests := []struct {
+		name string
+		keys []string
+		want []string
+	}{
+		{
+			name: "standard valid keys",
+			keys: []string{"app", "env", "region"},
+			want: []string{"app", "env", "region"},
+		},
+		{
+			name: "sanitize invalid keys",
+			keys: []string{
+				"Kubernetes.io/app",
+				"123-region",
+				"",
+				"!@#",
+			},
+			want: []string{
+				"kubernetes-io_app",
+				"k123-region",
+			},
+		},
+		{
+			name: "empty slice",
+			keys: []string{},
+			want: []string{},
+		},
+		{
+			name: "all invalid keys",
+			keys: []string{"", "!@#", "123"},
+			want: []string{"k123"},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got := sanitizeKeysForGCP(tt.keys)
+			if diff := cmp.Diff(tt.want, got); diff != "" {
+				t.Errorf("sanitizeKeysForGCP() mismatch (-want +got):\n%s", diff)
 			}
 		})
 	}
