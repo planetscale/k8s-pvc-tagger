@@ -6,11 +6,26 @@ import (
 	"maps"
 	"strings"
 	"time"
+	"unicode"
 
 	"github.com/prometheus/client_golang/prometheus"
 	log "github.com/sirupsen/logrus"
 	"google.golang.org/api/compute/v1"
 	"k8s.io/apimachinery/pkg/util/wait"
+)
+
+var gcpLabelCharReplacer = strings.NewReplacer(
+	// slash and dot are common, use different replacement chars:
+	"/", "_", // replace slashes with underscores
+	".", "-", // replace dots with dashes
+
+	// less common characters, replace with dashes:
+	" ", "-", // replace spaces with dashes
+	":", "-", // replace colons with dashes
+	",", "-", // replace commas with dashes
+	";", "-", // replace semi-colons with dashes
+	"=", "-", // replace equals with dashes
+	"+", "-", // replace plus with dashes
 )
 
 type GCPClient interface {
@@ -174,38 +189,106 @@ func parseVolumeID(id string) (string, string, string, error) {
 	return project, location, name, nil
 }
 
-func sanitizeLabelsForGCP(labels map[string]string) map[string]string {
-	newLabels := make(map[string]string, len(labels))
-	for k, v := range labels {
-		newLabels[sanitizeKeyForGCP(k)] = sanitizeValueForGCP(v)
-	}
-	return newLabels
+// isValidGCPChar returns true if the rune is valid for GCP labels:
+// lowercase letters, numbers, dash, or underscore. International characters are
+// allowed.
+func isValidGCPChar(r rune) bool {
+	return unicode.IsLetter(r) || unicode.IsDigit(r) || r == '-' || r == '_'
 }
 
-func sanitizeKeysForGCP(keys []string) []string {
-	newKeys := make([]string, len(keys))
-	for i, k := range keys {
-		newKeys[i] = sanitizeKeyForGCP(k)
+// sanitizeGCPLabelComponent handles the common sanitization logic for both keys
+// and values
+func sanitizeGCPLabelComponent(s string, isKey bool) string {
+	// Convert to lowercase
+	s = strings.ToLower(s)
+
+	// Replace invalid characters with dashes
+	s = gcpLabelCharReplacer.Replace(s)
+
+	// Filter to only valid characters
+	var b strings.Builder
+	for _, r := range s {
+		if isValidGCPChar(r) {
+			b.WriteRune(r)
+		}
 	}
-	return newKeys
+	s = b.String()
+
+	// For keys, ensure they start with a letter
+	if isKey && len(s) > 0 && !unicode.IsLetter(rune(s[0])) {
+		s = "k" + s
+	}
+
+	// Remove consecutive dashes/underscores
+	for strings.Contains(s, "--") || strings.Contains(s, "__") {
+		s = strings.ReplaceAll(s, "--", "-")
+		s = strings.ReplaceAll(s, "__", "_")
+	}
+
+	// Remove any trailing dashes or underscores
+	s = strings.TrimRight(s, "-_")
+
+	// Truncate to maximum length
+	if len(s) > 63 {
+		s = s[:63]
+		s = strings.TrimRight(s, "-_")
+	}
+
+	return s
 }
 
-// sanitizeKeyForGCP sanitizes a Kubernetes label key to fit GCP's label key constraints
+// sanitizeKeyForGCP sanitizes a Kubernetes label key to fit GCP's label key constraints:
+// - Must start with a lowercase letter or international character
+// - Can only contain lowercase letters, numbers, dashes and underscores
+// - Must be between 1 and 63 characters long
+// - Must use UTF-8 encoding
 func sanitizeKeyForGCP(key string) string {
-	key = strings.ToLower(key)
-	key = strings.NewReplacer("/", "_", ".", "-").Replace(key) // Replace disallowed characters
-	key = strings.TrimRight(key, "-_")                         // Ensure it does not end with '-' or '_'
-
-	if len(key) > 63 {
-		key = key[:63]
-	}
-	return key
+	return sanitizeGCPLabelComponent(key, true)
 }
 
-// sanitizeKeyForGCP sanitizes a Kubernetes label value to fit GCP's label value constraints
+// sanitizeValueForGCP sanitizes a Kubernetes label value to fit GCP's label value constraints:
+// - Can be empty
+// - Maximum length of 63 characters
+// - Can only contain lowercase letters, numbers, dashes and underscores
+// - Must use UTF-8 encoding
 func sanitizeValueForGCP(value string) string {
-	if len(value) > 63 {
-		value = value[:63]
+	return sanitizeGCPLabelComponent(value, false)
+}
+
+// sanitizeLabelsForGCP sanitizes a map of Kubernetes labels to fit GCP's constraints.
+// Empty keys after sanitization are dropped from the result.
+func sanitizeLabelsForGCP(labels map[string]string) map[string]string {
+	if len(labels) > 64 {
+		// If we have more than 64 labels, only take the first 64
+		truncatedLabels := make(map[string]string, 64)
+		i := 0
+		for k, v := range labels {
+			if i >= 64 {
+				break
+			}
+			truncatedLabels[k] = v
+			i++
+		}
+		labels = truncatedLabels
 	}
-	return value
+
+	result := make(map[string]string, len(labels))
+	for k, v := range labels {
+		if sanitizedKey := sanitizeKeyForGCP(k); sanitizedKey != "" {
+			result[sanitizedKey] = sanitizeValueForGCP(v)
+		}
+	}
+	return result
+}
+
+// sanitizeKeysForGCP sanitizes a slice of label keys to fit GCP's constraints.
+// Empty keys after sanitization are dropped from the result.
+func sanitizeKeysForGCP(keys []string) []string {
+	result := make([]string, 0, len(keys))
+	for _, k := range keys {
+		if sanitized := sanitizeKeyForGCP(k); sanitized != "" {
+			result = append(result, sanitized)
+		}
+	}
+	return result
 }
