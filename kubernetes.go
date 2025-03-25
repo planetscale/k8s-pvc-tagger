@@ -611,12 +611,10 @@ func processPersistentVolumeClaim(pvc *corev1.PersistentVolumeClaim) (string, ma
 		volumeID = parseAWSEBSVolumeID(pv.Spec.AWSElasticBlockStore.VolumeID)
 	case AWS_FSX_CSI:
 		volumeID = pv.Spec.CSI.VolumeHandle
-	case GCP_PD_LEGACY:
-		volumeID = pv.Spec.GCEPersistentDisk.PDName
 	case AZURE_DISK_CSI:
 		volumeID = pv.Spec.CSI.VolumeHandle
-	case GCP_PD_CSI:
-		volumeID = pv.Spec.CSI.VolumeHandle
+	case GCP_PD_LEGACY, GCP_PD_CSI:
+		volumeID = getGCPVolumeID(pv)
 	}
 
 	log.WithFields(log.Fields{"namespace": pvc.GetNamespace(), "pvc": pvc.GetName(), "volumeID": volumeID}).Debugln("parsed volumeID:", volumeID)
@@ -663,4 +661,25 @@ func getPVC(obj interface{}) *corev1.PersistentVolumeClaim {
 	}
 
 	return pvc
+}
+
+// getGCPVolumeID extracts the GCP volume ID from a PersistentVolume.
+// For GCP volumes, this will either be in CSI format or GCEPersistentDisk format.
+func getGCPVolumeID(pv *corev1.PersistentVolume) string {
+	if pv == nil {
+		return ""
+	}
+
+	// In the Kubernetes API, PersistentVolumeSource is designed so that
+	// exactly one of its fields is non-nil to indicate the volume type.
+
+	if pv.Spec.CSI != nil {
+		return pv.Spec.CSI.VolumeHandle
+	}
+
+	if pv.Spec.GCEPersistentDisk != nil {
+		return pv.Spec.GCEPersistentDisk.PDName
+	}
+
+	return ""
 }
