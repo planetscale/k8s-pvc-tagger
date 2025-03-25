@@ -572,7 +572,39 @@ func provisionedByGcpPD(pvc *corev1.PersistentVolumeClaim) bool {
 	return false
 }
 
+func shouldIgnore(pvc *corev1.PersistentVolumeClaim) bool {
+	annotations := pvc.GetAnnotations()
+	if annotations == nil {
+		return false
+	}
+
+	// Check if the annotation says to ignore this PVC
+	if _, ok := annotations[annotationPrefix+"/ignore"]; ok {
+		log.WithFields(log.Fields{"namespace": pvc.GetNamespace(), "pvc": pvc.GetName()}).Debugln(annotationPrefix + "/ignore annotation is set")
+		promIgnoredTotal.With(prometheus.Labels{"storageclass": *pvc.Spec.StorageClassName}).Inc()
+		promIgnoredLegacyTotal.Inc()
+		return true
+	}
+
+	// if the annotationPrefix has been changed, then we don't compare to the legacyAnnotationPrefix anymore
+	if annotationPrefix == defaultAnnotationPrefix {
+		if _, ok := annotations[legacyAnnotationPrefix+"/ignore"]; ok {
+			log.WithFields(log.Fields{"namespace": pvc.GetNamespace(), "pvc": pvc.GetName()}).Debugln(legacyAnnotationPrefix + "/ignore annotation is set")
+			promIgnoredTotal.With(prometheus.Labels{"storageclass": *pvc.Spec.StorageClassName}).Inc()
+			promIgnoredLegacyTotal.Inc()
+			return true
+		}
+	}
+
+	return false
+}
+
 func processPersistentVolumeClaim(pvc *corev1.PersistentVolumeClaim) (string, map[string]string, error) {
+	// Check for ignore annotation early and stop processing if found
+	if shouldIgnore(pvc) {
+		return "", nil, nil
+	}
+
 	tags := buildTags(pvc)
 
 	log.WithFields(log.Fields{"namespace": pvc.GetNamespace(), "pvc": pvc.GetName(), "tags": tags}).Debugln("PVC Tags")
